@@ -1,256 +1,340 @@
 #!/usr/bin/env python3
 """
-Manual Interactive Testing for MCP Tools
-Run individual tools and see the results
+Manual Interactive Testing for Customer Success FTE
+Calls CustomerSuccessAgent directly (no MCP layer needed for local testing)
 """
 
 import asyncio
 import json
 import sys
 from pathlib import Path
+from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from mcp_server import (
-    search_knowledge_base,
-    create_ticket,
-    escalate_to_human,
-    process_customer_message,
-    agent  # For direct access to conversation memory
+from customer_agent_prototype import (
+    CustomerSuccessAgent,
+    CustomerMessage,
+    ResolutionStatus
 )
 
-
-def print_json(data):
-    """Pretty print JSON"""
-    if isinstance(data, str):
-        try:
-            data = json.loads(data)
-        except:
-            pass
-    print(json.dumps(data, indent=2) if isinstance(data, dict) else data)
+# Shared agent instance + simple ticket store
+agent = CustomerSuccessAgent(docs_path="../context/product-docs.md")
+tickets: dict = {}
+ticket_counter = 1000
+escalations: dict = {}
+escalation_counter = 5000
 
 
-async def test_tool_1():
-    """Test: Search Knowledge Base"""
-    print("\n" + "="*70)
-    print("TOOL 1: search_knowledge_base")
-    print("="*70)
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
-    query = input("\nEnter your search query (or press Enter for default): ").strip()
+def next_ticket_id() -> str:
+    global ticket_counter
+    ticket_counter += 1
+    return f"TKT-{ticket_counter}"
+
+
+def next_escalation_id() -> str:
+    global escalation_counter
+    escalation_counter += 1
+    return f"ESC-{escalation_counter}"
+
+
+def pj(data):
+    """Pretty-print a dict as JSON."""
+    print(json.dumps(data, indent=2, default=str))
+
+
+def divider(title: str = "", width: int = 70):
+    if title:
+        print(f"\n{'='*width}")
+        print(f"  {title}")
+        print(f"{'='*width}")
+    else:
+        print("─" * width)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tool 1 – search_knowledge_base
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_tool_1():
+    divider("TOOL 1: search_knowledge_base")
+    query = input("\nSearch query [How do I connect WhatsApp?]: ").strip()
     if not query:
         query = "How do I connect WhatsApp?"
 
     print(f"\nSearching for: '{query}'...\n")
-    result = await search_knowledge_base(query=query, max_results=3)
-    print_json(result)
+    results = agent.knowledge_base.search(query, max_results=3)
+    pj({"success": True, "results_count": len(results), "results": results})
 
 
-async def test_tool_2():
-    """Test: Create Ticket"""
-    print("\n" + "="*70)
-    print("TOOL 2: create_ticket")
-    print("="*70)
+# ─────────────────────────────────────────────────────────────────────────────
+# Tool 2 – create_ticket
+# ─────────────────────────────────────────────────────────────────────────────
 
-    print("\nEnter ticket details (or press Enter to use defaults):")
-    email = input("Customer email [test@example.com]: ").strip() or "test@example.com"
-    name = input("Customer name [Test User]: ").strip() or "Test User"
-    tier = input("Customer tier (Starter/Growth/Enterprise) [Growth]: ").strip() or "Growth"
-    issue = input("Issue description [Test issue]: ").strip() or "Test issue"
-    priority = input("Priority (low/normal/high/critical) [normal]: ").strip() or "normal"
-    channel = input("Channel (email/whatsapp/web_form) [email]: ").strip() or "email"
+def test_tool_2():
+    divider("TOOL 2: create_ticket")
+    print("\nEnter ticket details (Enter = use default):")
+    email    = input("  Customer email    [test@example.com]: ").strip() or "test@example.com"
+    name     = input("  Customer name     [Test User]: ").strip()         or "Test User"
+    tier     = input("  Tier (Starter/Growth/Enterprise) [Growth]: ").strip() or "Growth"
+    issue    = input("  Issue description [Test issue]: ").strip()        or "Test issue"
+    priority = input("  Priority (low/normal/high/critical) [normal]: ").strip() or "normal"
+    channel  = input("  Channel (email/whatsapp/web_form) [email]: ").strip() or "email"
+
+    tid = next_ticket_id()
+    sentiment = agent.sentiment_analyzer.analyze(issue)
+    topics    = agent.topic_extractor.extract(issue)
+
+    tickets[tid] = {
+        "ticket_id":      tid,
+        "customer_email": email,
+        "customer_name":  name,
+        "customer_tier":  tier,
+        "issue":          issue,
+        "priority":       priority,
+        "channel":        channel,
+        "topics":         topics,
+        "sentiment_score": sentiment,
+        "status":         "open",
+        "created_at":     datetime.utcnow().isoformat(),
+    }
 
     print(f"\nCreating ticket...\n")
-    result = await create_ticket(
-        customer_email=email,
-        customer_name=name,
-        customer_tier=tier,
-        issue=issue,
-        priority=priority,
-        channel=channel
-    )
-    print_json(result)
-
-    # Return ticket ID for other tests
-    data = json.loads(result)
-    if data.get("success"):
-        return data["ticket_id"], email
-    return None, None
+    pj({"success": True, "ticket_id": tid, "topics": topics, "sentiment": sentiment})
+    return tid, email
 
 
-async def test_tool_3():
-    """Test: Get Customer History (Direct Access)"""
-    print("\n" + "="*70)
-    print("TOOL 3: get_customer_history (via agent)")
-    print("="*70)
+# ─────────────────────────────────────────────────────────────────────────────
+# Tool 3 – get_customer_history
+# ─────────────────────────────────────────────────────────────────────────────
 
-    email = input("\nEnter customer email [test@example.com]: ").strip() or "test@example.com"
+def test_tool_3():
+    divider("TOOL 3: get_customer_history")
+    email = input("\nCustomer email [test@example.com]: ").strip() or "test@example.com"
 
     print(f"\nFetching history for: {email}...\n")
+    conv = agent.conversation_memory.get_conversation(email)
 
-    conversation = agent.conversation_memory.get_conversation(email)
-
-    if conversation:
-        result = {
-            "success": True,
-            "has_history": True,
+    if conv:
+        pj({
+            "success":      True,
+            "has_history":  True,
             "customer_email": email,
-            "customer_name": conversation.customer_name,
+            "customer_name":  conv.customer_name,
             "summary": {
-                "total_interactions": len(conversation.turns),
-                "channels_used": conversation.channels_used,
-                "original_channel": conversation.original_channel,
-                "has_channel_switch": conversation.has_channel_switch(),
-                "topics_discussed": conversation.topics_discussed,
-                "average_sentiment": conversation.average_sentiment,
-                "resolution_status": conversation.resolution_status.value
+                "total_interactions":  len(conv.turns),
+                "channels_used":       conv.channels_used,
+                "original_channel":    conv.original_channel,
+                "has_channel_switch":  conv.has_channel_switch(),
+                "topics_discussed":    conv.topics_discussed,
+                "average_sentiment":   round(conv.average_sentiment, 3),
+                "resolution_status":   conv.resolution_status.value,
             }
-        }
+        })
     else:
-        result = {
-            "success": True,
-            "has_history": False,
-            "customer_email": email,
-            "message": "No conversation history found"
-        }
-
-    print_json(result)
+        pj({"success": True, "has_history": False, "customer_email": email,
+            "message": "No conversation history found"})
 
 
-async def test_tool_4():
-    """Test: Escalate to Human"""
-    print("\n" + "="*70)
-    print("TOOL 4: escalate_to_human")
-    print("="*70)
+# ─────────────────────────────────────────────────────────────────────────────
+# Tool 4 – escalate_to_human
+# ─────────────────────────────────────────────────────────────────────────────
 
-    # First create a ticket
-    print("\nFirst, let's create a ticket to escalate...")
-    result = await create_ticket(
-        customer_email="escalate@test.com",
-        customer_name="Escalate Test",
-        customer_tier="Enterprise",
-        issue="Critical security issue - need immediate help",
-        priority="critical",
-        channel="email"
-    )
-    data = json.loads(result)
-    ticket_id = data["ticket_id"]
-    print(f"Ticket created: {ticket_id}")
+def test_tool_4():
+    divider("TOOL 4: escalate_to_human")
 
-    print("\nEnter escalation details:")
-    reason = input("Reason (billing/security/legal/outage/bug) [security]: ").strip() or "security"
+    print("\nCreating a sample ticket to escalate first...")
+    tid = next_ticket_id()
+    tickets[tid] = {
+        "ticket_id": tid, "customer_email": "escalate@test.com",
+        "customer_name": "Escalate Test", "customer_tier": "Enterprise",
+        "issue": "Critical security issue", "priority": "critical",
+        "channel": "email", "status": "open",
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    print(f"  Ticket created: {tid}")
+
+    reason   = input("\nEscalation reason (billing/security/legal/outage/bug) [security]: ").strip() or "security"
     priority = input("Priority (normal/high/critical) [critical]: ").strip() or "critical"
 
-    print(f"\nEscalating ticket {ticket_id}...\n")
-    result = await escalate_to_human(
-        ticket_id=ticket_id,
-        reason=reason,
-        priority=priority
-    )
-    print_json(result)
+    eid = next_escalation_id()
+    escalations[eid] = {
+        "escalation_id": eid, "ticket_id": tid,
+        "reason": reason, "priority": priority,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    tickets[tid]["status"] = "escalated"
+
+    print(f"\nEscalating ticket {tid}...\n")
+    pj({"success": True, "escalation_id": eid, "ticket_id": tid,
+        "reason": reason, "priority": priority})
 
 
-async def test_tool_5():
-    """Test: Process Customer Message (End-to-End)"""
-    print("\n" + "="*70)
-    print("TOOL 5: process_customer_message (RECOMMENDED)")
-    print("="*70)
+# ─────────────────────────────────────────────────────────────────────────────
+# Tool 5 – process_customer_message  (full E2E pipeline)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    print("\nThis tool does everything in one call!")
-    print("Enter customer message details (or press Enter for defaults):")
+def test_tool_5():
+    divider("TOOL 5: process_customer_message — FULL PIPELINE")
+    print("\nEnter customer details (Enter = use default):")
+    email   = input("  Email   [demo@company.com]: ").strip()  or "demo@company.com"
+    name    = input("  Name    [Demo User]: ").strip()          or "Demo User"
+    tier    = input("  Tier    [Growth]: ").strip()             or "Growth"
+    message = input("  Message [How do I upload training data?]: ").strip() or "How do I upload training data?"
+    channel = input("  Channel [email]: ").strip()              or "email"
 
-    email = input("Customer email [demo@company.com]: ").strip() or "demo@company.com"
-    name = input("Customer name [Demo User]: ").strip() or "Demo User"
-    tier = input("Customer tier [Growth]: ").strip() or "Growth"
-    message = input("Customer message [How do I upload training data?]: ").strip() or "How do I upload training data?"
-    channel = input("Channel [email]: ").strip() or "email"
-
-    print(f"\nProcessing message end-to-end...\n")
-    result = await process_customer_message(
+    print(f"\nProcessing end-to-end...\n")
+    msg = CustomerMessage(
+        channel=channel,
         customer_email=email,
         customer_name=name,
         customer_tier=tier,
-        message=message,
-        channel=channel
+        content=message,
     )
+    result = agent.process_message(msg)
 
-    data = json.loads(result)
-    print("\n" + "-"*70)
+    divider()
     print("RESPONSE GENERATED:")
-    print("-"*70)
-    print(data.get("response", ""))
-    print("-"*70)
-    if "escalation" in data:
-        print(f"\nEscalated: {data['escalation'].get('escalate', False)}")
-        if data['escalation'].get('escalate'):
-            print(f"Reason: {data['escalation'].get('reason')}")
+    divider()
+    print(result["response"])
+    divider()
+
+    esc = result.get("escalation", {})
+    print(f"\nEscalated : {esc.get('escalate', False)}")
+    if esc.get("escalate"):
+        print(f"Reason    : {esc.get('reason')}")
+        print(f"Team      : {esc.get('team')}")
+        print(f"Priority  : {esc.get('priority')}")
+
+    print(f"\nSentiment : {result['sentiment']:.2f}")
+    print(f"Topics    : {', '.join(result['topics'])}")
+    print(f"KB hits   : {len(result['kb_results'])}")
 
 
-async def test_tool_6():
-    """Test: Get Conversation Stats (Direct Access)"""
-    print("\n" + "="*70)
-    print("TOOL 6: get_conversation_stats (via agent)")
-    print("="*70)
+# ─────────────────────────────────────────────────────────────────────────────
+# Tool 6 – get_conversation_stats
+# ─────────────────────────────────────────────────────────────────────────────
 
+def test_tool_6():
+    divider("TOOL 6: get_conversation_stats")
     print("\nFetching overall statistics...\n")
-    stats = agent.conversation_memory.get_conversation_stats()
-    print_json(stats)
+    pj(agent.conversation_memory.get_conversation_stats())
 
 
-async def main():
-    """Interactive menu"""
+# ─────────────────────────────────────────────────────────────────────────────
+# Full interactive conversation loop
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_conversation_loop():
+    divider("FULL INTERACTIVE CONVERSATION FLOW")
+    print("\nSimulate a real customer conversation (multi-turn).")
+    print("Type 'quit' or leave message blank to end the session.\n")
+
+    email   = input("Customer email   [user@example.com]: ").strip() or "user@example.com"
+    name    = input("Customer name    [Jane Doe]: ").strip()          or "Jane Doe"
+    tier    = input("Customer tier    [Growth]: ").strip()            or "Growth"
+    channel = input("Channel          [email]: ").strip()             or "email"
+
+    turn = 0
+    while True:
+        turn += 1
+        print(f"\n[Turn {turn}]")
+        message = input("  Your message (or 'quit'): ").strip()
+        if not message or message.lower() == "quit":
+            print("\nEnding conversation.")
+            break
+
+        msg = CustomerMessage(
+            channel=channel,
+            customer_email=email,
+            customer_name=name,
+            customer_tier=tier,
+            content=message,
+        )
+        result = agent.process_message(msg)
+
+        divider()
+        print("AGENT RESPONSE:")
+        divider()
+        print(result["response"])
+        divider()
+
+        esc = result.get("escalation", {})
+        if esc.get("escalate"):
+            print(f"  >> ESCALATED to {esc.get('team')} — reason: {esc.get('reason')}")
+            print("  >> Ending session (ticket handed to human team).")
+            break
+
+        conv = agent.conversation_memory.get_conversation(email)
+        if conv:
+            print(f"  Sentiment so far: {conv.average_sentiment:.2f}  |  "
+                  f"Topics: {', '.join(conv.topics_discussed)}")
+
+    # Summary after conversation
+    conv = agent.conversation_memory.get_conversation(email)
+    if conv and conv.turns:
+        print(f"\nConversation summary for {name}:")
+        print(f"  Turns     : {len(conv.turns)}")
+        print(f"  Channels  : {', '.join(conv.channels_used)}")
+        print(f"  Topics    : {', '.join(conv.topics_discussed)}")
+        print(f"  Status    : {conv.resolution_status.value}")
+        print(f"  Sentiment : {conv.average_sentiment:.2f}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main menu
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main():
     print("\n" + "="*70)
-    print("  CUSTOMER SUCCESS FTE - MANUAL TOOL TESTING")
+    print("  CUSTOMER SUCCESS FTE — MANUAL TESTING")
     print("="*70)
 
     while True:
-        print("\n\nSelect a tool to test:")
-        print("  1. search_knowledge_base - Search product docs")
-        print("  2. create_ticket - Create a support ticket")
-        print("  3. get_customer_history - View conversation history (direct)")
-        print("  4. escalate_to_human - Escalate a ticket")
-        print("  5. process_customer_message - Full pipeline (RECOMMENDED)")
-        print("  6. get_conversation_stats - View overall stats (direct)")
-        print("  7. Run all tests automatically")
+        print("\n\nSelect an option:")
+        print("  1. search_knowledge_base     — Search product docs")
+        print("  2. create_ticket             — Create a support ticket")
+        print("  3. get_customer_history      — View conversation history")
+        print("  4. escalate_to_human         — Escalate a ticket")
+        print("  5. process_customer_message  — Single E2E message (full pipeline)")
+        print("  6. get_conversation_stats    — View overall stats")
+        print("  7. FULL CONVERSATION LOOP    — Interactive multi-turn chat")
+        print("  8. Run all single-tool tests")
         print("  0. Exit")
 
-        choice = input("\nEnter your choice (0-7): ").strip()
+        choice = input("\nEnter your choice (0-8): ").strip()
 
         try:
-            if choice == "1":
-                await test_tool_1()
-            elif choice == "2":
-                await test_tool_2()
-            elif choice == "3":
-                await test_tool_3()
-            elif choice == "4":
-                await test_tool_4()
-            elif choice == "5":
-                await test_tool_5()
-            elif choice == "6":
-                await test_tool_6()
-            elif choice == "7":
-                print("\nRunning all tests...")
-                await test_tool_1()
-                await asyncio.sleep(1)
-                await test_tool_2()
-                await asyncio.sleep(1)
-                await test_tool_5()
-                await asyncio.sleep(1)
-                await test_tool_3()
-                await asyncio.sleep(1)
-                await test_tool_6()
+            if   choice == "1": test_tool_1()
+            elif choice == "2": test_tool_2()
+            elif choice == "3": test_tool_3()
+            elif choice == "4": test_tool_4()
+            elif choice == "5": test_tool_5()
+            elif choice == "6": test_tool_6()
+            elif choice == "7": run_conversation_loop()
+            elif choice == "8":
+                print("\nRunning all single-tool tests...")
+                test_tool_1()
+                test_tool_2()
+                test_tool_5()
+                test_tool_3()
+                test_tool_6()
                 print("\n\nAll tests completed!")
             elif choice == "0":
                 print("\nGoodbye!")
                 break
             else:
-                print("\n❌ Invalid choice. Please enter 0-7.")
+                print("\nInvalid choice. Please enter 0-8.")
 
         except KeyboardInterrupt:
-            print("\n\nTest interrupted. Returning to menu...")
+            print("\n\nInterrupted. Returning to menu...")
             continue
         except Exception as e:
-            print(f"\n❌ Error: {e}")
+            print(f"\nError: {e}")
             import traceback
             traceback.print_exc()
 
@@ -258,4 +342,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
